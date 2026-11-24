@@ -100,12 +100,13 @@
       </div>
       <div class="hint">Coloque o tamanho <b>exato</b> da etiqueta (ex.: 50 × 30). Está escrito na caixa do rolo.</div>
       <label>Modo de impressão</label>
-      <select id="modo">
-        <option value="tspl">Etiqueta com espaço entre elas (TSPL) — recomendado</option>
-        <option value="escff">Etiqueta ESC/POS (pula para a próxima)</option>
+      <select id="modoImp">
+        <option value="escff">Etiqueta — pula para a próxima (recomendado)</option>
+        <option value="escpitch">Etiqueta — por medida (altura + espaço)</option>
         <option value="esc">Bobina contínua (cupom)</option>
+        <option value="tspl">TSPL (só impressoras de etiqueta profissionais)</option>
       </select>
-      <div class="hint">Se a etiqueta sair desalinhada, teste outro modo. Ao trocar o rolo, use <b>Calibrar</b>.</div>
+      <div class="hint">Se sair desalinhado, teste o modo "por medida" e ajuste o <b>Espaço entre</b>. <b>Alinhar</b> leva o papel para o início da próxima etiqueta.</div>
       <div class="row3">
         <div><label>Cópias</label><input type="number" id="copias" value="1" min="1" max="200"></div>
         <div><label>Espaço entre (mm)</label><input type="number" id="gap" value="2" min="0" max="20" step="0.5"></div>
@@ -113,7 +114,7 @@
       </div>
       <div class="row">
         <div><label>Pontos/mm</label><select id="dpmm"><option value="8">8 (203dpi)</option><option value="12">12 (300dpi)</option></select></div>
-        <div><label>&nbsp;</label><button id="btnCal" type="button" style="width:100%">Calibrar</button></div>
+        <div><label>&nbsp;</label><button id="btnCal" type="button" style="width:100%">Alinhar</button></div>
       </div>
       <label>Contraste da logo: <b id="vLim">160</b></label>
       <input type="range" id="limiar" min="40" max="240" value="160">
@@ -147,7 +148,7 @@ let conn = null; // { write: async (Uint8Array) => {}, name }
 function log(m) { $('log').textContent = m + '\n' + $('log').textContent; }
 
 /* ---------- persistência ---------- */
-const FIELDS = ['modo','gap','nome','sub','fonte','tam','tam2','negrito','maiusc','layout','logoTam','borda','larg','alt','copias','avanco','dpmm','limiar','dither','semLogo'];
+const FIELDS = ['modoImp','gap','nome','sub','fonte','tam','tam2','negrito','maiusc','layout','logoTam','borda','larg','alt','copias','avanco','dpmm','limiar','dither','semLogo'];
 function save() {
   try {
     const o = {};
@@ -308,10 +309,18 @@ function binarize() {
 }
 
 /* ---------- ESC/POS ---------- */
-function buildEscPos() {
+// monta uma única sequência para todas as cópias (reset só uma vez, para não perder a posição)
+function buildEscPos(copies) {
+  const one = buildEscPosOne();
+  const parts = [new Uint8Array([0x1B, 0x40])]; // ESC @ (reset)
+  for (let i = 0; i < copies; i++) parts.push(one);
+  return concat(parts);
+}
+
+function buildEscPosOne() {
   const W = cv.width, H = cv.height, bpr = W / 8;
   const px = ctx.getImageData(0, 0, W, H).data;
-  const parts = [new Uint8Array([0x1B, 0x40])]; // ESC @ (reset)
+  const parts = [];
   const BAND = 128;
   for (let y0 = 0; y0 < H; y0 += BAND) {
     const h = Math.min(BAND, H - y0);
@@ -322,9 +331,12 @@ function buildEscPos() {
     }
     parts.push(head, body);
   }
-  const feed = Math.round(+$('avanco').value * +$('dpmm').value);
-  if (feed > 0) parts.push(new Uint8Array([0x1B, 0x4A, Math.min(255, feed)])); // ESC J n
-  if ($('modo').value === 'escff') parts.push(new Uint8Array([0x1D, 0x0C])); // GS FF: vai ao início da próxima etiqueta
+  const modo = $('modoImp').value, dpmm = +$('dpmm').value;
+  let feedMm = +$('avanco').value;
+  if (modo === 'escpitch') feedMm += +$('gap').value; // pula exatamente o espaço entre etiquetas
+  let feed = Math.round(feedMm * dpmm);
+  while (feed > 0) { const f = Math.min(255, feed); parts.push(new Uint8Array([0x1B, 0x4A, f])); feed -= f; } // ESC J n
+  if (modo === 'escff') parts.push(new Uint8Array([0x1D, 0x0C])); // GS FF: vai ao início da próxima etiqueta
   return concat(parts);
 }
 
@@ -354,8 +366,13 @@ function buildTSPL(copies) {
 $('btnCal').onclick = async () => {
   if (!conn) { alert('Conecte a impressora primeiro.'); return; }
   try {
-    await conn.write(enc(`SIZE ${$('larg').value} mm,${$('alt').value} mm\r\nGAP ${$('gap').value} mm,0 mm\r\nGAPDETECT\r\n`));
-    log('Calibração enviada (a impressora vai puxar algumas etiquetas).');
+    if ($('modoImp').value === 'tspl') {
+      await conn.write(enc(`SIZE ${$('larg').value} mm,${$('alt').value} mm\r\nGAP ${$('gap').value} mm,0 mm\r\nGAPDETECT\r\n`));
+      log('Calibração TSPL enviada.');
+    } else {
+      await conn.write(new Uint8Array([0x1B, 0x40, 0x1D, 0x0C])); // reset + ir para o início da próxima etiqueta
+      log('Alinhar enviado.');
+    }
   } catch (e) { alert('Erro: ' + e.message); }
 };
 
@@ -432,15 +449,15 @@ $('btnPrint').onclick = async () => {
   try {
     await render();
     const n = Math.max(1, +$('copias').value);
-    if ($('modo').value === 'tspl') {
+    if ($('modoImp').value === 'tspl') {
       btn.textContent = 'Imprimindo...';
       await conn.write(buildTSPL(n));
       log(`Impresso (TSPL): ${n} etiqueta(s)`);
       btn.textContent = '🖨️ Imprimir'; btn.disabled = !conn;
       return;
     }
-    const data = buildEscPos();
-    for (let i = 0; i < n; i++) { btn.textContent = `Imprimindo ${i + 1}/${n}...`; await conn.write(data); await sleep(300); }
+    btn.textContent = 'Imprimindo...';
+    await conn.write(buildEscPos(n));
     log(`Impresso: ${n} cópia(s)`);
   } catch (e) { log('Erro ao imprimir: ' + e.message); alert('Erro ao imprimir: ' + e.message); }
   btn.textContent = '🖨️ Imprimir'; btn.disabled = !conn;
