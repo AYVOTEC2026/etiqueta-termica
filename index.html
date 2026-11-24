@@ -95,7 +95,7 @@
     <div class="card">
       <h2>Etiqueta e impressora</h2>
       <div class="row">
-        <div><label>Largura (mm)</label><input type="number" id="larg" value="48" min="10" max="104"></div>
+        <div><label>Largura (mm)</label><input type="number" id="larg" value="50" min="10" max="104"></div>
         <div><label>Altura (mm)</label><input type="number" id="alt" value="30" min="10" max="300"></div>
       </div>
       <div class="hint">Coloque o tamanho <b>exato</b> da etiqueta (ex.: 50 × 30). Está escrito na caixa do rolo.</div>
@@ -113,9 +113,17 @@
         <div><label>Avanço (mm)</label><input type="number" id="avanco" value="0" min="0" max="50"></div>
       </div>
       <div class="row">
+        <div><label>Impressora</label><select id="cabeca"><option value="48">58mm (cabeça 48mm)</option><option value="72">80mm (cabeça 72mm)</option></select></div>
         <div><label>Pontos/mm</label><select id="dpmm"><option value="8">8 (203dpi)</option><option value="12">12 (300dpi)</option></select></div>
-        <div><label>&nbsp;</label><button id="btnCal" type="button" style="width:100%">Alinhar</button></div>
       </div>
+      <h2 style="margin-top:18px">Ajuste de posição</h2>
+      <div class="row3">
+        <div><label>Margem (mm)</label><input type="number" id="margem" value="2.5" min="0" max="10" step="0.5"></div>
+        <div><label>↓ Descer (mm)</label><input type="number" id="offY" value="0" min="-10" max="20" step="0.5"></div>
+        <div><label>→ Direita (mm)</label><input type="number" id="offX" value="0" min="-10" max="10" step="0.5"></div>
+      </div>
+      <div class="hint">Saiu muito em cima? Aumente <b>Descer</b>. Saiu muito embaixo? Use número negativo. Cortando um lado? Ajuste <b>Direita</b> (negativo vai para a esquerda).</div>
+      <button id="btnCal" type="button" style="width:100%;margin-top:10px">Alinhar (ir para o início da próxima etiqueta)</button>
       <label>Contraste da logo: <b id="vLim">160</b></label>
       <input type="range" id="limiar" min="40" max="240" value="160">
       <div class="chk"><input type="checkbox" id="dither"> <span>Pontilhado (bom para foto/degradê)</span></div>
@@ -148,7 +156,7 @@ let conn = null; // { write: async (Uint8Array) => {}, name }
 function log(m) { $('log').textContent = m + '\n' + $('log').textContent; }
 
 /* ---------- persistência ---------- */
-const FIELDS = ['modoImp','gap','nome','sub','fonte','tam','tam2','negrito','maiusc','layout','logoTam','borda','larg','alt','copias','avanco','dpmm','limiar','dither','semLogo'];
+const FIELDS = ['modoImp','gap','cabeca','margem','offY','offX','nome','sub','fonte','tam','tam2','negrito','maiusc','layout','logoTam','borda','larg','alt','copias','avanco','dpmm','limiar','dither','semLogo'];
 function save() {
   try {
     const o = {};
@@ -213,8 +221,15 @@ async function render() {
   $('vLogoTam').textContent = $('logoTam').value; $('vLim').textContent = $('limiar').value;
 
   const dpmm = +$('dpmm').value;
-  const W = Math.max(8, Math.floor(+$('larg').value * dpmm / 8) * 8);
+  const head = +$('cabeca').value;
+  const W = Math.max(8, Math.floor(head * dpmm / 8) * 8);          // largura real da cabeça de impressão
   const H = Math.max(8, Math.round(+$('alt').value * dpmm));
+  const m = Math.max(0, +$('margem').value) * dpmm;
+  const labelW = Math.min(+$('larg').value, head) * dpmm;
+  // área útil: etiqueta centralizada na cabeça, menos a margem, mais o ajuste horizontal
+  const CX = (W - labelW) / 2 + m + (+$('offX').value) * dpmm, CY = m;
+  const CW = Math.max(10, labelW - 2 * m), CH = Math.max(10, H - 2 * m);
+  const gapIn = 1.5 * dpmm;
   const font = $('fonte').value;
   const weight = $('negrito').checked ? 'bold' : 'normal';
   const up = $('maiusc').checked;
@@ -229,24 +244,23 @@ async function render() {
   cv.style.width = Math.min(W * 1.6, 640) + 'px';
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
 
-  const pad = Math.round(H * 0.05) + 2;
   const layout = $('layout').value;
+  const hasText = nome.trim() || sub.trim();
   let tx, ty, tw, th, align;
 
   // logo
   if (hasLogo) {
     const pct = +$('logoTam').value / 100;
-    let bw, bh, bx, by;
-    if (layout === 'left') { bw = (W - pad * 2) * pct; bh = H - pad * 2; bx = pad; by = pad; }
-    else { bw = W - pad * 2; bh = (H - pad * 2) * (nome || sub ? pct : 1); bx = pad; by = pad; }
+    const bw = layout === 'left' ? CW * pct : CW;
+    const bh = layout === 'left' ? CH : CH * (hasText ? pct : 1);
     const r = Math.min(bw / logoImg.width, bh / logoImg.height);
     const lw = logoImg.width * r, lh = logoImg.height * r;
-    const lx = layout === 'left' ? bx + (bw - lw) / 2 : (W - lw) / 2;
-    const ly = layout === 'left' ? (H - lh) / 2 : by;
+    const lx = layout === 'left' ? CX + (bw - lw) / 2 : CX + (CW - lw) / 2;
+    const ly = layout === 'left' ? CY + (CH - lh) / 2 : CY;
     drawLogo(lx, ly, lw, lh);
-    if (layout === 'left') { tx = pad * 2 + bw; ty = pad; tw = W - tx - pad; th = H - pad * 2; align = 'left'; }
-    else { tx = pad; ty = ly + lh + pad * 0.6; tw = W - pad * 2; th = H - ty - pad; align = 'center'; }
-  } else { tx = pad; ty = pad; tw = W - pad * 2; th = H - pad * 2; align = 'center'; }
+    if (layout === 'left') { tx = CX + bw + gapIn; ty = CY; tw = CW - bw - gapIn; th = CH; align = 'left'; }
+    else { tx = CX; ty = ly + lh + gapIn; tw = CW; th = CY + CH - ty; align = 'center'; }
+  } else { tx = CX; ty = CY; tw = CW; th = CH; align = 'center'; }
 
   // textos
   ctx.fillStyle = '#000'; ctx.textBaseline = 'top';
@@ -264,7 +278,7 @@ async function render() {
   ctx.font = `normal ${B.size}px "${font}"`;
   for (const l of B.lines) { ctx.fillText(l, xx, y); y += B.size * 1.15; }
 
-  if ($('borda').checked) { ctx.strokeStyle = '#000'; ctx.lineWidth = 3; ctx.strokeRect(1.5, 1.5, W - 3, H - 3); }
+  if ($('borda').checked) { ctx.strokeStyle = '#000'; ctx.lineWidth = 3; ctx.strokeRect(CX - m / 2, CY - m / 2, CW + m, CH + m); }
 
   binarize();
   save();
@@ -310,20 +324,35 @@ function binarize() {
 
 /* ---------- ESC/POS ---------- */
 // monta uma única sequência para todas as cópias (reset só uma vez, para não perder a posição)
+const feedBytes = dots => { const p = []; while (dots > 0) { const f = Math.min(255, dots); p.push(new Uint8Array([0x1B, 0x4A, f])); dots -= f; } return p; }; // ESC J n
+
 function buildEscPos(copies) {
-  const one = buildEscPosOne();
-  const parts = [new Uint8Array([0x1B, 0x40])]; // ESC @ (reset)
+  const modo = $('modoImp').value, dpmm = +$('dpmm').value;
+  const offY = Math.round(+$('offY').value * dpmm);
+  const parts = [new Uint8Array([0x1B, 0x40])]; // ESC @ (reset) só uma vez
+  // no modo "por medida" o deslocamento é aplicado uma vez só (senão muda o passo entre etiquetas)
+  if (modo === 'escpitch' && offY > 0) parts.push(...feedBytes(offY));
+  const one = buildEscPosOne(modo, dpmm, offY);
   for (let i = 0; i < copies; i++) parts.push(one);
   return concat(parts);
 }
 
-function buildEscPosOne() {
+function buildEscPosOne(modo, dpmm, offY) {
   const W = cv.width, H = cv.height, bpr = W / 8;
   const px = ctx.getImageData(0, 0, W, H).data;
   const parts = [];
+  const rowBlank = y => { for (let x = 0; x < W; x++) if (px[(y * W + x) * 4] < 128) return false; return true; };
+  // deslocamento negativo: corta linhas do topo (o conteúdo sobe)
+  let yStart = offY < 0 ? Math.min(H - 1, -offY) : 0, yEnd = H;
+  if (modo === 'escff') {
+    // pula para o início da etiqueta e desce o ajuste
+    if (offY > 0) parts.push(...feedBytes(offY));
+    // corta as linhas em branco do fim: a imagem nunca invade o espaço entre etiquetas
+    while (yEnd - 1 > yStart && rowBlank(yEnd - 1)) yEnd--;
+  }
   const BAND = 128;
-  for (let y0 = 0; y0 < H; y0 += BAND) {
-    const h = Math.min(BAND, H - y0);
+  for (let y0 = yStart; y0 < yEnd; y0 += BAND) {
+    const h = Math.min(BAND, yEnd - y0);
     const head = new Uint8Array([0x1D, 0x76, 0x30, 0x00, bpr & 255, bpr >> 8, h & 255, h >> 8]);
     const body = new Uint8Array(bpr * h);
     for (let y = 0; y < h; y++) for (let x = 0; x < W; x++) {
@@ -331,11 +360,9 @@ function buildEscPosOne() {
     }
     parts.push(head, body);
   }
-  const modo = $('modoImp').value, dpmm = +$('dpmm').value;
   let feedMm = +$('avanco').value;
-  if (modo === 'escpitch') feedMm += +$('gap').value; // pula exatamente o espaço entre etiquetas
-  let feed = Math.round(feedMm * dpmm);
-  while (feed > 0) { const f = Math.min(255, feed); parts.push(new Uint8Array([0x1B, 0x4A, f])); feed -= f; } // ESC J n
+  if (modo === 'escpitch') feedMm += +$('gap').value + yStart / dpmm; // mantém o passo exato: altura + espaço
+  parts.push(...feedBytes(Math.round(feedMm * dpmm)));
   if (modo === 'escff') parts.push(new Uint8Array([0x1D, 0x0C])); // GS FF: vai ao início da próxima etiqueta
   return concat(parts);
 }
