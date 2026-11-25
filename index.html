@@ -31,7 +31,14 @@
   button:disabled { opacity:.45; cursor:not-allowed; }
   .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }
   .preview-wrap { display:flex; flex-direction:column; align-items:center; gap:12px; }
-  #cv { background:#fff; box-shadow:0 2px 12px rgba(0,0,0,.15); image-rendering:pixelated; max-width:100%; border-radius:4px; }
+  #stage { position:relative; max-width:100%; }
+  main > * { min-width:0; }
+  html, body { overflow-x:hidden; }
+  #cv { display:block; width:100%; background:#fff; box-shadow:0 2px 12px rgba(0,0,0,.15); image-rendering:pixelated; border-radius:4px; }
+  #ov { position:absolute; inset:0; width:100%; height:100%; touch-action:none; }
+  .seg { display:flex; gap:6px; flex-wrap:wrap; justify-content:center; }
+  .seg button.on { background:#2563eb; color:#fff; border-color:#2563eb; }
+  @media (max-width: 820px) { .preview-wrap { order:-1; } }
   .hint { font-size:12px; color:var(--mut); line-height:1.5; }
   .big { font-size:16px; padding:14px 22px; }
   #log { font-size:12px; color:var(--mut); white-space:pre-wrap; max-height:120px; overflow:auto; width:100%; }
@@ -77,13 +84,14 @@
         <option>Georgia</option>
       </select>
       <div class="row">
-        <div><label>Tamanho nome: <b id="vTam">48</b></label><input type="range" id="tam" min="12" max="160" value="48"></div>
-        <div><label>Tamanho secundário: <b id="vTam2">24</b></label><input type="range" id="tam2" min="10" max="100" value="24"></div>
+        <div><label>Tamanho nome: <b id="vTam">48</b></label><input type="range" id="tam" min="12" max="400" value="120"></div>
+        <div><label>Tamanho secundário: <b id="vTam2">24</b></label><input type="range" id="tam2" min="10" max="300" value="40"></div>
       </div>
       <div class="chk"><input type="checkbox" id="negrito" checked> <span>Negrito</span></div>
       <div class="chk"><input type="checkbox" id="maiusc"> <span>TUDO MAIÚSCULO</span></div>
       <label>Layout</label>
-      <select id="layout">
+      <select id="layout2">
+        <option value="free" selected>Livre — arrastar com o dedo</option>
         <option value="top">Logo em cima, texto embaixo</option>
         <option value="left">Logo à esquerda, texto à direita</option>
       </select>
@@ -132,7 +140,17 @@
 
   <div class="card preview-wrap">
     <h2>Pré-visualização (como vai sair)</h2>
-    <canvas id="cv"></canvas>
+    <div id="stage"><canvas id="cv"></canvas><canvas id="ov"></canvas></div>
+    <div id="freeBar" style="display:flex;flex-direction:column;gap:8px;align-items:center;width:100%">
+      <div class="seg">
+        <button data-sel="logo">Logo</button><button data-sel="nome">Nome</button><button data-sel="sub">Texto 2</button>
+      </div>
+      <div class="seg">
+        <button data-act="minus">➖ Diminuir</button><button data-act="plus">➕ Aumentar</button>
+        <button data-act="center">↔ Centralizar</button><button data-act="reset">↺ Reorganizar</button>
+      </div>
+      <div class="hint" style="text-align:center">Toque na logo ou no texto e <b>arraste</b> para mover. Para aumentar ou diminuir, use <b>dois dedos</b> (pinça) ou puxe a <b>bolinha azul</b>.</div>
+    </div>
     <div class="actions">
       <button class="primary big" id="btnPrint" disabled>🖨️ Imprimir</button>
       <button id="btnSys" title="Usa a impressora instalada no sistema">Imprimir pelo sistema</button>
@@ -156,7 +174,7 @@ let conn = null; // { write: async (Uint8Array) => {}, name }
 function log(m) { $('log').textContent = m + '\n' + $('log').textContent; }
 
 /* ---------- persistência ---------- */
-const FIELDS = ['modoImp','gap','cabeca','margem','offY','offX','nome','sub','fonte','tam','tam2','negrito','maiusc','layout','logoTam','borda','larg','alt','copias','avanco','dpmm','limiar','dither','semLogo'];
+const FIELDS = ['modoImp','gap','cabeca','margem','offY','offX','nome','sub','fonte','tam','tam2','negrito','maiusc','layout2','logoTam','borda','larg','alt','copias','avanco','dpmm','limiar','dither','semLogo'];
 function save() {
   try {
     const o = {};
@@ -178,7 +196,7 @@ $('logo').addEventListener('change', e => {
   const r = new FileReader();
   r.onload = () => {
     const im = new Image();
-    im.onload = () => { logoImg = im; $('semLogo').checked = false; render(); };
+    im.onload = () => { logoImg = im; $('semLogo').checked = false; if (free) delete free.logo; render(); };
     im.src = r.result;
     try { localStorage.setItem('etq_logo', r.result); } catch (e) {}
   };
@@ -241,10 +259,14 @@ async function render() {
   if (tk !== renderToken) return;
 
   cv.width = W; cv.height = H;
-  cv.style.width = Math.min(W * 1.6, 640) + 'px';
+  $('stage').style.width = `min(${Math.min(W * 1.6, 640)}px, 100%)`;
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
 
-  const layout = $('layout').value;
+  boxes = {};
+  if (isFree()) {
+    renderFree({ W, H, CX, CY, CW, CH, gapIn, font, weight, nome, sub, hasLogo });
+  } else {
+  const layout = $('layout2').value;
   const hasText = nome.trim() || sub.trim();
   let tx, ty, tw, th, align;
 
@@ -277,12 +299,171 @@ async function render() {
   for (const l of A.lines) { ctx.fillText(l, xx, y); y += A.size * 1.15; }
   ctx.font = `normal ${B.size}px "${font}"`;
   for (const l of B.lines) { ctx.fillText(l, xx, y); y += B.size * 1.15; }
+  }
 
   if ($('borda').checked) { ctx.strokeStyle = '#000'; ctx.lineWidth = 3; ctx.strokeRect(CX - m / 2, CY - m / 2, CW + m, CH + m); }
 
   binarize();
   save();
+  drawOverlay();
 }
+
+/* ---------- modo livre: arrastar e redimensionar com o dedo ---------- */
+let free = null, boxes = {}, selected = 'nome', resetFree = false, rq = 0;
+const isFree = () => $('layout2').value === 'free';
+try { free = JSON.parse(localStorage.getItem('etq_free') || 'null'); } catch (e) {}
+const saveFree = () => { try { localStorage.setItem('etq_free', JSON.stringify(free)); } catch (e) {} };
+const scheduleRender = () => { if (!rq) rq = requestAnimationFrame(() => { rq = 0; render(); }); };
+
+function textBox(text, font, weight, size) {
+  ctx.font = `${weight} ${size}px "${font}"`;
+  const lines = text.split('\n');
+  const w = Math.max(1, ...lines.map(l => ctx.measureText(l).width));
+  return { lines, w, h: lines.length * size * 1.15 };
+}
+// maior tamanho de letra que cabe na caixa
+function fitSize(text, font, weight, maxW, maxH) {
+  const b = textBox(text, font, weight, 100);
+  return Math.max(8, Math.floor(Math.min(100 * maxW / b.w, 100 * maxH / b.h)));
+}
+
+function initFree(g) {
+  const { CX, CY, CW, CH, gapIn, font, weight, nome, sub, hasLogo } = g;
+  const f = {}, hasNome = nome.trim().length > 0, hasSub = sub.trim().length > 0;
+  let top = CY;
+  if (hasLogo) {
+    const asp = logoImg.width / logoImg.height;
+    let h = CH * (hasNome || hasSub ? 0.55 : 1), w = h * asp;
+    if (w > CW) { w = CW; h = w / asp; }
+    f.logo = { x: CX + CW / 2, y: CY + h / 2, w };
+    top = CY + h + gapIn;
+  }
+  const rest = Math.max(10, CY + CH - top);
+  let y = top;
+  if (hasNome) {
+    const s = fitSize(nome, font, weight, CW, hasSub ? rest * 0.62 : rest);
+    const h = textBox(nome, font, weight, s).h;
+    f.nome = { x: CX + CW / 2, y: y + h / 2, size: s }; y += h;
+  }
+  if (hasSub) {
+    const s = fitSize(sub, font, 'normal', CW, Math.max(10, CY + CH - y));
+    const h = textBox(sub, font, 'normal', s).h;
+    f.sub = { x: CX + CW / 2, y: y + h / 2, size: s };
+  }
+  return f;
+}
+
+function renderFree(g) {
+  if (!free || resetFree) { free = initFree(g); resetFree = false; saveFree(); }
+  else { const d = initFree(g); for (const k in d) if (!free[k]) free[k] = d[k]; }
+  if (g.hasLogo && free.logo) {
+    const L = free.logo, h = L.w * logoImg.height / logoImg.width;
+    drawLogo(L.x - L.w / 2, L.y - h / 2, L.w, h);
+    boxes.logo = { x0: L.x - L.w / 2, y0: L.y - h / 2, x1: L.x + L.w / 2, y1: L.y + h / 2 };
+  }
+  ctx.fillStyle = '#000'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (const [k, text, wt] of [['nome', g.nome, g.weight], ['sub', g.sub, 'normal']]) {
+    const T = free[k];
+    if (!T || !text.trim()) continue;
+    const b = textBox(text, g.font, wt, T.size);
+    let y = T.y - b.h / 2;
+    for (const l of b.lines) { ctx.fillText(l, T.x, y + T.size * 0.075); y += T.size * 1.15; }
+    boxes[k] = { x0: T.x - b.w / 2, y0: T.y - b.h / 2, x1: T.x + b.w / 2, y1: T.y + b.h / 2 };
+  }
+  $('tam').value = free.nome ? Math.round(free.nome.size) : $('tam').value;
+  $('tam2').value = free.sub ? Math.round(free.sub.size) : $('tam2').value;
+  $('vTam').textContent = $('tam').value; $('vTam2').textContent = $('tam2').value;
+}
+
+const ov = $('ov');
+const pxScale = () => cv.width / (cv.getBoundingClientRect().width || cv.width); // pontos por pixel de tela
+function drawOverlay() {
+  ov.width = cv.width; ov.height = cv.height;
+  const fr = isFree();
+  ov.style.pointerEvents = fr ? 'auto' : 'none';
+  $('freeBar').style.display = fr ? 'flex' : 'none';
+  document.querySelectorAll('[data-sel]').forEach(b => { b.classList.toggle('on', b.dataset.sel === selected); b.style.display = boxes[b.dataset.sel] ? '' : 'none'; });
+  if (!fr) return;
+  const o = ov.getContext('2d'), k = pxScale();
+  for (const [name, b] of Object.entries(boxes)) {
+    const sel = name === selected;
+    o.setLineDash(sel ? [] : [4 * k, 3 * k]);
+    o.strokeStyle = sel ? '#2563eb' : 'rgba(37,99,235,.45)';
+    o.lineWidth = (sel ? 2 : 1) * k;
+    o.strokeRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+    if (sel) {
+      o.setLineDash([]); o.beginPath(); o.arc(b.x1, b.y1, 9 * k, 0, Math.PI * 2);
+      o.fillStyle = '#2563eb'; o.fill(); o.lineWidth = 2 * k; o.strokeStyle = '#fff'; o.stroke();
+    }
+  }
+}
+
+const getSize = k => k === 'logo' ? free[k].w : free[k].size;
+function setSize(k, v) {
+  if (!free || !free[k]) return;
+  if (k === 'logo') free[k].w = Math.max(10, Math.min(cv.width * 2, v));
+  else free[k].size = Math.max(6, Math.min(600, v));
+}
+function toDots(e) {
+  const r = ov.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * ov.width / r.width, y: (e.clientY - r.top) * ov.height / r.height };
+}
+function hitTest(p) {
+  const pad = 8 * pxScale();
+  const order = [selected, 'nome', 'sub', 'logo'];
+  for (const k of order) { const b = boxes[k]; if (b && p.x >= b.x0 - pad && p.x <= b.x1 + pad && p.y >= b.y0 - pad && p.y <= b.y1 + pad) return k; }
+  return null;
+}
+const ptrs = new Map(); let drag = null;
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+ov.addEventListener('pointerdown', e => {
+  if (!free) return;
+  e.preventDefault(); try { ov.setPointerCapture(e.pointerId); } catch (_) {}
+  const p = toDots(e); ptrs.set(e.pointerId, p);
+  if (ptrs.size === 2 && free[selected]) {
+    const [a, b] = [...ptrs.values()];
+    drag = { mode: 'pinch', d0: Math.max(5, dist(a, b)), s0: getSize(selected) }; return;
+  }
+  const b = boxes[selected];
+  if (b && Math.hypot(p.x - b.x1, p.y - b.y1) < 22 * pxScale()) {
+    const c = free[selected];
+    drag = { mode: 'resize', s0: getSize(selected), d0: Math.max(5, Math.hypot(p.x - c.x, p.y - c.y)) }; return;
+  }
+  const hit = hitTest(p);
+  if (hit) { selected = hit; drag = { mode: 'move', last: p }; scheduleRender(); } else drag = null;
+});
+ov.addEventListener('pointermove', e => {
+  if (!ptrs.has(e.pointerId)) return;
+  const p = toDots(e); ptrs.set(e.pointerId, p);
+  if (!drag || !free[selected]) return;
+  const c = free[selected];
+  if (drag.mode === 'pinch' && ptrs.size >= 2) { const [a, b] = [...ptrs.values()]; setSize(selected, drag.s0 * dist(a, b) / drag.d0); }
+  else if (drag.mode === 'move') { c.x += p.x - drag.last.x; c.y += p.y - drag.last.y; drag.last = p; }
+  else if (drag.mode === 'resize') setSize(selected, drag.s0 * Math.hypot(p.x - c.x, p.y - c.y) / drag.d0);
+  scheduleRender();
+});
+const endPtr = e => {
+  ptrs.delete(e.pointerId);
+  if (ptrs.size === 0) { drag = null; saveFree(); }
+  else if (drag && drag.mode === 'pinch') drag = { mode: 'move', last: [...ptrs.values()][0] };
+};
+ov.addEventListener('pointerup', endPtr);
+ov.addEventListener('pointercancel', endPtr);
+
+document.querySelectorAll('[data-sel]').forEach(b => b.onclick = () => { selected = b.dataset.sel; scheduleRender(); });
+document.querySelectorAll('[data-act]').forEach(b => b.onclick = () => {
+  const a = b.dataset.act;
+  if (a === 'reset') { resetFree = true; scheduleRender(); return; }
+  if (!free || !free[selected]) return;
+  if (a === 'plus') setSize(selected, getSize(selected) * 1.1);
+  if (a === 'minus') setSize(selected, getSize(selected) / 1.1);
+  if (a === 'center') free[selected].x = cv.width / 2 + (+$('offX').value) * +$('dpmm').value;
+  saveFree(); scheduleRender();
+});
+// sliders de tamanho também controlam o modo livre
+$('tam').addEventListener('input', () => { if (isFree() && free && free.nome) { free.nome.size = +$('tam').value; saveFree(); } });
+$('tam2').addEventListener('input', () => { if (isFree() && free && free.sub) { free.sub.size = +$('tam2').value; saveFree(); } });
+window.addEventListener('resize', drawOverlay);
 
 function drawLogo(x, y, w, h) {
   // desenha a logo em canvas temporário e converte para preto/branco
